@@ -3,96 +3,128 @@
  * Assignment: Final Project
  * Date: 5/11/2024
  ****************************************/
-
 #include <dht_nonblocking.h>
-#include <Servo.h>
+#include <Stepper.h>
 #include <Adafruit_Sensor.h>
 #include <LiquidCrystal.h>
-#include <DHT.h>
-#include <DHT_U.h>
+#include <dht.h>
 #include <Wire.h>
 #include "RTClib.h"
 RTC_DS1307 rtc;
 
-// Assigning pins to specific LED colors
-#define BLUE 53 // Activated during motor operation.
-#define GREEN 51 // Lights up in idle state, before fan activation.
-#define RED 47 // Indicates low water level; other LEDs off until resolved.
-#define YELLOW 49 // On during system's disabled state.
+// Define Pins for LEDs
+#define BLUE 53
+#define GREEN 51 
+#define RED 47 
+#define YELLOW 49 
+//END OF LED pin definitions
 
 #define DHT_SENSOR_TYPE DHT_TYPE_11
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
+
+#define STEPS 360
+Stepper stepper(STEPS, 22,24,26,28);
 const int A = 0b00000010;
 
-// LED intensity configuration
+//integer variables for LEDs
 int redValue = 255;
 int greenValue = 255;
 int blueValue = 255;
 int yellowValue = 255;
 
-// Register pointers for ADC configuration
+//How to turn LED on/off
+// analogWrite(RED, redValue);
+
+//Define ADC Register Pointers
 volatile unsigned char* my_ADMUX = (unsigned char*) 0x7C;
 volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
 volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
 volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
+//end of water sensor and servo register pointers
 
-// Water sensor and servo motor variable initialization
+//variables for water sensor code.
+//had to edit these variables to get the water sensor code to work.
 int adc_id = 0;
 int HistoryValue = 0;
 char printBuffer[128];
 
-// LiquidCrystal display initialization with pin numbers
-LiquidCrystal lcd(7, 8, 9, 10, 11, 12);
+const int RS = 31, EN = 33, D4 = 35, D5 = 37, D6 = 39, D7 = 41;
+LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
 
-static const int DHT_SENSOR_PIN = 2; // Temperature sensor pin
+static const int DHT_SENSOR_PIN = 11; //pin two for temperature sensor
 DHT_nonblocking dht_sensor( DHT_SENSOR_PIN, DHT_SENSOR_TYPE );
 
-// Port configuration for various functions
+
+//define port E pointers
 volatile unsigned char* port_e = (unsigned char*) 0x2E;
 volatile unsigned char* ddr_e = (unsigned char*) 0x2D;
 volatile unsigned char* pin_e = (unsigned char*) 0x2C;
+
+//define PORT B pointers
 volatile unsigned char* port_b = (unsigned char*) 0x25;
 volatile unsigned char* ddr_b = (unsigned char*) 0x24;
 volatile unsigned char* pin_b = (unsigned char*) 0x23;
+
+//define PORT L pointers
 volatile unsigned char* port_l = (unsigned char*) 0x10B;
 volatile unsigned char* ddr_l = (unsigned char*) 0x10A;
 volatile unsigned char* pin_l = (unsigned char*) 0x109;
+
+
+//define port G pointers
 volatile unsigned char* port_g = (unsigned char*) 0x34;
 volatile unsigned char* ddr_g = (unsigned char*) 0x33;
 volatile unsigned char* pin_g = (unsigned char*) 0x32;
+//end of DC motor code
 
-int inPin = 52;         // Input pin number
-int outPin = 50;        // Output pin number
 
-int state = LOW;        // Current state of the output pin
-int reading;            // Current reading from the input pin
-int previous = HIGH;    // Previous reading from the input pin
+int inPin = 52;         // the number of the input pin
+int outPin = 50;       // the number of the output pin
 
-long time = 0;          // Last toggle time of the output pin
-long debounce = 200;    // Debounce time; adjust if output flickers
+int state = LOW;      // the current state of the output pin
+int reading;           // the current reading from the input pin
+int previous = HIGH;    // the previous reading from the input pin
 
-void setup( ) {
+long time = 0;         // the last time the output pin was toggled
+long debounce = 200;   // the debounce time, increase if the output flickers
+
+void setup( )
+{
   Serial.begin( 9600);
-  adc_init(); // Initialize water and servo controls
-  myservo.attach(13);
-  myservo.write(90); // Center servo position at 90 degrees
-  lcd.begin(16, 2); // Set LCD columns and rows
+  adc_init(); //initialized water and servo controls
+  stepper.setSpeed(15);
+  lcd.begin(16, 2);
 
-  *ddr_l |= B00000100; // Configure pins for LEDs
+
+  //pinMode(RED, OUTPUT);
+  *ddr_l |= B00000100;
+  //pinMode(GREEN, OUTPUT);
   *ddr_b |= B00000100;
+  //pinMode(BLUE, OUTPUT);
   *ddr_b |= B00000001;
+  //pinMode(YELLOW, OUTPUT);
   *ddr_l |= B00000001;
-  *port_l |= B00000001; // Set initial LED states
+  //digitalWrite(RED, LOW);
+  *ddr_l &= B11111011;
+  //digitalWrite(GREEN, LOW);
+  //digitalWrite(BLUE, LOW);
+  
+  //digitalWrite(YELLOW, HIGH);
+  *port_l |= B00000001;
 
-  *ddr_e |= 0x20; // DC motor configuration
+ //DC motor setup
+ //Set PE5 to output
+  *ddr_e |= 0x20;
+//set PE3 to output
   *ddr_e |= 0x08;
+//set PG5 to output
   *ddr_g |= 0x20;
 
   pinMode(inPin, INPUT);
   pinMode(outPin, OUTPUT);
 
-  // RTC error handling
+  //error messages for RTC
  if (! rtc.begin()) {
    Serial.println("Couldn't find RTC");
    while (1);
@@ -102,170 +134,226 @@ void setup( ) {
  }
 }
 
-void loop( ) {
+void loop( )
+{  
   float temperature;
   float humidity;
   reading = digitalRead(inPin);
 
   if (reading == HIGH && previous == LOW && millis() - time > debounce) {
-    state = !state;
-    Serial.println(state == HIGH ? "ON" : "OFF");
+    if (state == HIGH){
+      state = LOW;
+      Serial.print("OFF\n");
+    }
+    else{
+      Serial.print("ON\n");
+      state = HIGH;
+    }
     time = millis();    
   }
 
   digitalWrite(outPin, state);
+
   previous = reading;
 
   if(state == HIGH){
-    if( measure_environment( &temperature, &humidity ) == true ) {
-      timeStamp();
-      Serial.printf("Temperature: %.1f deg. F, Humidity = %.1f%%\n", temperature, humidity);
-    }
+  if( measure_environment( &temperature, &humidity ) == true )
+  {
+    timeStamp();
+    Serial.print( "Temperature: " );
+    float op1 = temperature * 1.8;
+    float op2 = op1 + 32; //conversion from C to F
+    temperature = op2;
+    Serial.print(temperature, 1);
+    Serial.print("\n");
+    Serial.print( "deg. F, Humidity = " );
+    Serial.print(humidity, 1);
+    Serial.print("%\n");
+  }
+    //water sensor loop code:
+    int value = adc_read(adc_id); // get adc value
+    
+    //test purposes:
+   // int value = 151; // get adc value
 
-    int value = adc_read(adc_id); // Read ADC value for water sensor
-
+    //red LED water level low loop
     if(value < 50){ errorLED(value); }
     
-    if(abs(HistoryValue - value) > 10){
+    if(((HistoryValue>=value) && ((HistoryValue - value) > 10)) || ((HistoryValue<value) && ((value - HistoryValue) > 10)))
+    {
       sprintf(printBuffer,"Water level is %d\n", value);
       Serial.print(printBuffer);
       HistoryValue = value;
-    }
-
-    servoLoop();
+    } //end of water sensor loop code
   
-    if(temperature > 0){
-      lcdScreen(temperature, humidity);
-    }
+if(temperature > 0){
+  lcdScreen(temperature, humidity);
+}
 
-    motorToggle(temperature, value);
+  motorToggle(temperature, value);
   }
   else if(state == LOW){
-    lcd.setCursor(0, 0);
-    lcd.print("STATUS:           ");
-    lcd.setCursor(0, 1);
-    lcd.print("IDLE...          ");
+  lcd.setCursor(0, 0);
+  lcd.print("STATUS:           ");
+  lcd.setCursor(0, 1);
+  lcd.print("IDLE...          ");
 
-    *port_l |= B00000001;
-    *port_b &= B11111011;
+  //analogWrite(BLUE, 0);
+  *ddr_b |= B00000001;
+  //analogWrite(RED, 0);
+   *ddr_l &= B11111011;
+  //analogWrite(YELLOW, yellowValue);
+  *port_l |= B00000001;
+   //analogWrite(GREEN, 0);
+  *port_b &= B11111011;
+    
   }
 }
 
-void errorLED(int waterLevel) {
-  // Activate RED LED and display error message on low water level
-  *port_b &= B11111010; // Turn off BLUE LED
-  *port_l |= B00000100; // Activate RED LED
+void motorToggle(float temperature, float value){
+      if(temperature > 76 && value > 50){
+  //write a 1 to the enable bit on PE3
+  *port_e |= 0x08;
+  //analogWrite(BLUE, blueValue);
+  *port_b |= B00000001;
+  //analogWrite(RED, 0); && analogWrite(YELLOW, 0);
+  *port_l &= 11111010;
+   //analogWrite(GREEN, 0);
+  *port_b &= B11111011;
+  }
+  
+  if(temperature < 76){
+  *port_e &= 0x00;
+  //analogWrite(BLUE, 0);
+  *port_b &= B11111110;
+  //analogWrite(RED, 0);
+  //analogWrite(YELLOW, 0);
+  *port_l &= B11111010;
+  //analogWrite(GREEN, greenValue);
+  *port_b |= B00000100; 
+  }
+//write a 1 to PE5
+*port_e |= 0x20;
+
+//write a 0 to PG5
+*port_g &= 0x20;
+
+  }
+
+void errorLED(int waterLevel){
+  //analogWrite(BLUE, 0);
+  *port_b &= B11111010;
+  //analogWrite(RED, redValue);
+  *port_l |= B00000100;
+  //analogWrite(YELLOW, 0);
+  //analogWrite(GREEN, 0);  
   lcd.setCursor(0, 0);
   lcd.print("Error!         ");
   lcd.setCursor(0, 1);
   lcd.print("WATER TOO LOW!      ");
   waterLevel = adc_read(adc_id);
+  *port_e &= 0x00;
   delay(4000);
-  if (waterLevel < 50) {
-    errorLED(waterLevel); // Recursive call if water level remains low
+  if(waterLevel < 50){
+  errorLED(waterLevel);
   }
 }
 
-void servoLoop() {
-  // Read voltage and adjust servo angle accordingly
-  int voltage = adc_read(A); // Read voltage from potentiometer
-  int angle = voltage / 5.7; // Convert voltage to servo angle
-  myservo.write(angle); // Update servo position
-}
-
-void lcdScreen(float temperature, float humidity) {
-  // Update LCD with current humidity and temperature
+void lcdScreen(float temperature, float humidity){
+  // set the cursor to column 0, line 1
+  // (note: line 1 is the second row, since counting begins with 0):
   lcd.setCursor(0, 0);
   lcd.print("Humidity: ");
   lcd.print(humidity, 1);
   lcd.print("%");
   
   lcd.setCursor(0, 1);
+  // print the number of seconds since reset:
   lcd.print("Fahrenheit: ");
   lcd.print(temperature, 1);
 }
 
-void timeStamp() {
-  // Log time for temperature readings
-  DateTime now = rtc.now();
-  Serial.print("\nTime: ");
-  Serial.print(now.month(), DEC);
-  Serial.print('/');
-  Serial.print(now.day(), DEC);
-  Serial.print(" ");
-  int hour = now.hour();
-  hour -= 4; // Time zone adjustment if needed
-  Serial.print(hour, DEC);
-  Serial.print(':');
-  Serial.print(now.minute(), DEC);
-  Serial.print(':');
-  Serial.print(now.second(), DEC);
-  Serial.println();
-  delay(3000);
+void timeStamp(){
+//loop to log time for temperature readings
+ DateTime now = rtc.now();
+ Serial.print("\nTime: ");
+ Serial.print(now.month(), DEC);
+ Serial.print('/');
+ Serial.print(now.day(), DEC);
+ Serial.print(" ");
+ int hour = now.hour();
+ hour -= 4; //had to adjust the hour because it was NOT reading the correct time.
+ Serial.print(hour, DEC);
+ Serial.print(':');
+ Serial.print(now.minute(), DEC);
+ Serial.print(':');
+ Serial.print(now.second(), DEC);
+ Serial.println();
+ delay(3000); 
 }
 
-static bool measure_environment(float *temperature, float *humidity) {
-  // Measure temperature and humidity at defined intervals
-  static unsigned long measurement_timestamp = millis();
-  if (millis() - measurement_timestamp > 3000ul) {
-    if (dht_sensor.measure(temperature, humidity) == true) {
-      measurement_timestamp = millis();
-      return true;
+static bool measure_environment( float *temperature, float *humidity )
+{
+  static unsigned long measurement_timestamp = millis( );
+
+  /* Measure once every four seconds. */
+  if( millis( ) - measurement_timestamp > 3000ul )
+  {
+    if( dht_sensor.measure( temperature, humidity ) == true )
+    {
+      measurement_timestamp = millis( );
+      return( true );
     }
   }
-  return false;
+
+  return( false );
+}
+//end of temperature sensor code
+
+//function for water sensor loop and servo loop
+void adc_init()
+{
+
+  //MUST UPDATE FUNCTION AND SEPERATE THE SERVO AND WATER SENSOR POINTERS.
+  // setup the A register
+  *my_ADCSRA |= B10000000;
+  *my_ADCSRA &= B11110111;
+  *my_ADCSRA &= B11011111;
+  
+  // setup the B register
+  *my_ADCSRB &= B11111000;
+
+  // setup the MUX Register
+  *my_ADMUX |= (1<<REFS0);
 }
 
-unsigned int adc_read(unsigned int adc_channel_num) {
-  // Read ADC value from specified channel
+//second funciton for water sensor and servo loop:
+unsigned int adc_read(unsigned int adc_channel_num)
+{
+    //MUST UPDATE FUNCTION AND SEPERATE THE SERVO AND WATER SENSOR POINTERS.
   int channel_selector;
-  *my_ADMUX &= B11100000; // Clear the channel selection bits in ADMUX (MUX 4:0)
-  *my_ADCSRB &= B11110111; // Clear the MUX5 bit in ADCSRB
+  // clear the channel selection bits (MUX 4:0)
+  *my_ADMUX &= B11100000;
 
-  // Assign the correct channel using MUX 5:0
+  // clear the channel selection bits (MUX 5)
+  *my_ADCSRB &= B11110111;
+
+  //Assign correct channel using MUX 5:0
   if (adc_channel_num < 8) {
     *my_ADMUX |= adc_channel_num;
-  } else if ((adc_channel_num > 7) && (adc_channel_num < 16)) {
-    channel_selector = (adc_channel_num - 8);
-    *my_ADCSRB |= B00001000;
-    *my_ADMUX |= channel_selector;
+  }
+  else if ((adc_channel_num > 7) && (adc_channel_num < 16)) {
+     channel_selector = (adc_channel_num - 8);
+     *my_ADCSRB |= B00001000;
+     *my_ADMUX |= channel_selector;
   }
 
-  // Start the conversion and wait for it to finish
-  *my_ADCSRA |= B01000000; // Start the conversion
-  while ((*my_ADCSRA & 0x40) != 0); // Wait for conversion to complete
+  // set bit 6 of ADCSRA to 1 to start a conversion
+  *my_ADCSRA |= B01000000;
   
-  return (*my_ADC_DATA & 0x03FF); // Return the conversion result
-}
-
-void motorToggle(float temperature, float value) {
-  if (temperature > 76 && value > 50) {
-    // Engage motor control if temperature and water level are adequate
-    *port_e |= 0x08; // Enable bit on PE3 to turn on motor
-    *port_b |= B00000001; // Activate BLUE LED
-    *port_l &= 11111010; // Turn off RED and YELLOW LEDs
-    *port_b &= B11111011; // Turn off GREEN LED
-  }
+  // wait for the conversion to complete
+  while ((*my_ADCSRA & 0x40) != 0);
   
-  if (temperature < 76) {
-    // Disengage motor control if temperature is too low
-    *port_e &= 0x00; // Disable motor
-    *port_b &= B11111110; // Turn off BLUE LED
-    *port_l &= B11111010; // Turn off RED and YELLOW LEDs
-    *port_b |= B00000100; // Activate GREEN LED
-  }
-  *port_e |= 0x20; // Ensure motor controller PE5 is set to output
-  *port_g &= 0x20; // Ensure PG5 output is reset
-}
-
-
-void adc_init() {
-  // Initialize ADC for reading water sensor and controlling servo
-  *my_ADCSRA |= B10000000; // Set the enable bit in ADCSRA
-  *my_ADCSRA &= B11110111; // Adjust as necessary for setup
-  *my_ADCSRA &= B11011111; // Clear the ADIF bit in ADCSRA by writing a 1 to it
-  
-  *my_ADCSRB &= B11111000; // Ensure MUX5 is clear
-  
-  *my_ADMUX |= (1 << REFS0); // Set reference voltage selection
+  // return the result in the ADC data register
+  return (*my_ADC_DATA & 0x03FF);
 }
